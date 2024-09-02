@@ -2,9 +2,77 @@ import { launch } from 'puppeteer';
 import { Solver } from '@2captcha/captcha-solver';
 import { readFileSync, writeFileSync } from 'fs';
 import { normalizeUserAgent } from './normalize-ua.js';
+process.noDeprecation = true;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const solver = new Solver(process.env.APIKEY);
+
+// ANSI color codes
+const colors = {
+  reset: "\x1b[0m",
+  bright: "\x1b[1m",
+  dim: "\x1b[2m",
+  underscore: "\x1b[4m",
+  blink: "\x1b[5m",
+  reverse: "\x1b[7m",
+  hidden: "\x1b[8m",
+  
+  fg: {
+    black: "\x1b[30m",
+    red: "\x1b[31m",
+    green: "\x1b[32m",
+    yellow: "\x1b[33m",
+    blue: "\x1b[34m",
+    magenta: "\x1b[35m",
+    cyan: "\x1b[36m",
+    white: "\x1b[37m",
+    crimson: "\x1b[38m"
+  },
+  bg: {
+    black: "\x1b[40m",
+    red: "\x1b[41m",
+    green: "\x1b[42m",
+    yellow: "\x1b[43m",
+    blue: "\x1b[44m",
+    magenta: "\x1b[45m",
+    cyan: "\x1b[46m",
+    white: "\x1b[47m",
+    crimson: "\x1b[48m"
+  }
+};
+
+// Function to format date and time
+const formatDate = (date) => {
+  const pad = (num) => num.toString().padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
+
+// Colored logging function with readable timestamp
+const colorLog = (type, message) => {
+  let colorCode;
+  switch(type) {
+    case 'INFO':
+      colorCode = colors.fg.cyan;
+      break;
+    case 'SUCCESS':
+      colorCode = colors.fg.green;
+      break;
+    case 'WARNING':
+      colorCode = colors.fg.yellow;
+      break;
+    case 'ERROR':
+    case 'CRITICAL':
+      colorCode = colors.fg.red;
+      break;
+    case 'START':
+    case 'END':
+      colorCode = colors.fg.magenta;
+      break;
+    default:
+      colorCode = colors.reset;
+  }
+  console.log(`[${formatDate(new Date())}] ${colorCode}[${type}]${colors.reset} ${message}`);
+};
 
 // Read files
 let proxies = readFileSync('proxies.txt', 'utf8').trim().split('\n');
@@ -39,9 +107,8 @@ const formatProxy = (proxyString) => {
 async function clickByCoordinates(page, x, y) {
   try {
     await page.mouse.click(x, y);
-    console.log(`Clicked at coordinates (${x}, ${y})`);
   } catch (error) {
-    console.error(`Failed to click at coordinates (${x}, ${y}): ${error.message}`);
+    colorLog('ERROR', `Failed to click at (${x}, ${y}): ${error.message}`);
   }
 }
 
@@ -50,76 +117,67 @@ const processReference = async (reference) => {
   const isCosu = refCode.includes('COSU');
   const proxyConfig = formatProxy(proxies[proxyIndex]);
 
-  console.log('Starting the script...');
+  colorLog('INFO', `Starting to process reference: ${reference}`);
   const initialUserAgent = await normalizeUserAgent();
-  console.log(`Normalized User Agent: ${initialUserAgent}`);
+  colorLog('INFO', `Normalized User Agent: ${initialUserAgent}`);
 
   let browser;
   try {
     browser = await launch({
-      headless: false,
-      devtools: true,
+      headless: true,
       args: [
         `--user-agent=${initialUserAgent}`,
         `--proxy-server=${proxyConfig.host}:${proxyConfig.port}`,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
       ],
     });
-    console.log('Browser launched');
+    colorLog('INFO', 'Browser launched in headless mode');
 
     const [page] = await browser.pages();
-    console.log('Page created');
+    colorLog('INFO', 'Window created');
 
-    // Set a specific window size
     await page.setViewport({ width: 800, height: 600 });
-    console.log('Viewport set to 800x600');
+    colorLog('INFO', 'Viewport set to 800x600');
 
     await page.authenticate(proxyConfig.auth);
 
     const preloadFile = readFileSync('./inject.js', 'utf8');
     await page.evaluateOnNewDocument(preloadFile);
-    console.log('Preload file evaluated');
 
     page.on('console', async (msg) => {
       const txt = msg.text();
-      console.log(`Console log: ${txt}`);
 
       if (txt.includes('intercepted-params:')) {
         const params = JSON.parse(txt.replace('intercepted-params:', ''));
-        console.log('Intercepted params:', params);
         try {
-          console.log(`Solving the captcha...`);
+          colorLog('INFO', 'Solving the captcha...');
           const res = await solver.cloudflareTurnstile(params);
-          console.log(`Solved the captcha ${res.id}`);
-          console.log('Captcha solution:', res);
+          colorLog('SUCCESS', `Solved the captcha ${res.id}`);
           await page.evaluate((token) => {
             cfCallback(token);
           }, res.data);
         } catch (e) {
-          console.error('Error solving captcha:', e.err || e.message);
-          // Instead of throwing, we'll return false to indicate failure
+          colorLog('ERROR', `Error solving captcha: ${e.err || e.message}`);
           return false;
         }
       }
     });
 
-    console.log('Navigating to the page...');
     await page.goto('https://www.help.tinder.com/hc/en-us/requests/new?ticket_form_id=360000234452');
-    console.log('Page loaded');
+    colorLog('INFO', 'Navigated to form');
     await sleep(15000);
 
-    console.log('Clicking');
+    colorLog('INFO', 'Performing click...');
     await clickByCoordinates(page, 53, 290);
-    console.log('Done Click');
+    colorLog('INFO', 'Clicked CloudFlare box');
     await sleep(1000);
-    console.log('Clicking');
     await clickByCoordinates(page, 53, 290);
-    console.log('Done Click');
     await sleep(3000);
-    console.log('Waiting for 20 seconds');
+    colorLog('INFO', 'Waiting for captcha to solve');
     await sleep(30000);
-    console.log('Wait complete');
+    colorLog('INFO', 'Wait completed');
 
-    // Helper function to set field values without focus
     const setFieldValue = async (selector, value) => {
       try {
         await page.waitForSelector(selector, { timeout: 10000 });
@@ -129,15 +187,14 @@ const processReference = async (reference) => {
           element.dispatchEvent(new Event('input', { bubbles: true }));
           element.dispatchEvent(new Event('change', { bubbles: true }));
         }, selector, value);
-        console.log(`Field ${selector} set to: ${value}`);
+        colorLog('INFO', `Set field ${selector} to ${value}`);
       } catch (error) {
-        console.error(`Failed to set field ${selector}: ${error.message}`);
+        colorLog('ERROR', `Failed to set field ${selector}: ${error.message}`);
         throw error;
       }
     };
 
-    // Set values for all fields
-    await sleep(1000);
+    colorLog('INFO', 'Filling form fields...');
     await setFieldValue('#request_custom_fields_360013981632', 'f_refund_request');
     await sleep(1000);
     await setFieldValue('#request_custom_fields_360013898451', 'f_web');
@@ -151,18 +208,18 @@ const processReference = async (reference) => {
     await setFieldValue('#request_description', description);
     await sleep(1000);
 
-    console.log('All fields filled successfully');
+    colorLog('INFO', 'All fields filled successfully');
 
-    await sleep(1000);
+    colorLog('INFO', 'Submitting the form');
     await page.click('.tinder-btn');
     await sleep(4000);
-    console.log('Operation complete. Closing browser...');
+    colorLog('SUCCESS', 'Form submitted');
+
     await browser.close();
-    console.log('Browser closed. Script finished.');
 
     return true; // Indicate success
   } catch (error) {
-    console.error(`Error occurred: ${error.message}`);
+    colorLog('ERROR', `Error occurred while processing ${reference}: ${error.message}`);
     if (browser) {
       await browser.close();
     }
@@ -171,76 +228,58 @@ const processReference = async (reference) => {
 };
 
 const example = async () => {
-  let referenceIndex = 0;
-  let completedReferences = new Set();
+  colorLog('START', 'Starting to process references...');
+  for (let i = 0; i < references.length; i++) {
+    const reference = references[i];
+    colorLog('INFO', `Processing reference ${i + 1}/${references.length}: ${reference}`);
+    let success = false;
+    let retryCount = 0;
+    const maxRetries = 3;
 
-  while (completedReferences.size < references.length) {
-    const reference = references[referenceIndex];
-    
-    if (!completedReferences.has(reference)) {
-      console.log(`Processing reference: ${reference}`);
-      let success = false;
-      let retryCount = 0;
-      const maxRetries = 3;
-
-      while (!success && retryCount < maxRetries) {
-        try {
-          success = await processReference(reference);
-          if (success) {
-            console.log(`Successfully processed reference: ${reference}`);
-            completedReferences.add(reference);
-            
-            // Remove the processed reference from refs.txt and add to completed.txt
-            references = references.filter(ref => ref !== reference);
-            writeFileSync('refs.txt', references.join('\n'));
-            
-            const timestamp = new Date().toISOString();
-            writeFileSync('completed.txt', `${reference},${timestamp}\n`, { flag: 'a' });
-          } else {
-            console.log(`Failed to process reference: ${reference}. Retrying with a new proxy...`);
-            proxyIndex = (proxyIndex + 1) % proxies.length;
-            retryCount++;
-          }
-        } catch (error) {
-          console.error(`Error processing reference: ${reference}. Error: ${error.message}`);
+    while (!success && retryCount < maxRetries) {
+      try {
+        success = await processReference(reference);
+        if (success) {
+          colorLog('SUCCESS', `Successfully processed reference: ${reference}`);
+          
+          references.splice(i, 1);
+          i--;
+          writeFileSync('refs.txt', references.join('\n'));
+          
+          const timestamp = formatDate(new Date());
+          writeFileSync('completed.txt', `${reference},${timestamp}\n`, { flag: 'a' });
+        } else {
+          colorLog('WARNING', `Failed to process reference: ${reference}. Retrying with a new proxy...`);
           proxyIndex = (proxyIndex + 1) % proxies.length;
           retryCount++;
         }
-
-        if (retryCount < maxRetries) {
-          console.log(`Waiting before retry ${retryCount + 1}/${maxRetries}...`);
-          await sleep(5000 * (retryCount + 1)); // Exponential backoff
-        }
+      } catch (error) {
+        colorLog('ERROR', `Error processing reference: ${reference}. Error: ${error.message}`);
+        proxyIndex = (proxyIndex + 1) % proxies.length;
+        retryCount++;
       }
 
-      if (!success) {
-        console.log(`Failed to process reference ${reference} after ${maxRetries} attempts. Moving to next reference.`);
-        // Optionally, you could add this reference to a 'failed.txt' file
-        writeFileSync('failed.txt', `${reference}\n`, { flag: 'a' });
+      if (retryCount < maxRetries && !success) {
+        colorLog('INFO', `Waiting before retry ${retryCount + 1}/${maxRetries}...`);
+        await sleep(5000 * (retryCount + 1)); // Exponential backoff
       }
     }
 
-    // Move to the next reference, or wrap around to the beginning if we've reached the end
-    referenceIndex = (referenceIndex + 1) % references.length;
-    
-    // If we've wrapped around, reload the references from the file
-    if (referenceIndex === 0) {
-      references = readFileSync('refs.txt', 'utf8').trim().split('\n');
-      console.log('Reloaded references from file.');
+    if (!success) {
+      colorLog('FAILURE', `Failed to process reference ${reference} after ${maxRetries} attempts. Moving to next reference.`);
+      writeFileSync('failed.txt', `${reference}\n`, { flag: 'a' });
     }
 
     await sleep(1000); // Wait between references
   }
 
-  console.log('All references have been processed.');
+  colorLog('END', 'All references have been processed.');
 };
 
 example().catch(error => {
-  console.error('Unhandled error in main loop:', error);
-  // Optionally, you could implement a restart mechanism here
-  // For example:
-  // setTimeout(() => {
-  //   console.log('Restarting the script...');
-  //   example();
-  // }, 60000);
+  colorLog('CRITICAL', `Unhandled error in main loop: ${error.message}`);
+  colorLog('CRITICAL', `Stack trace: ${error.stack}`);
 });
+
+
+//export APIKEY=ccb96854bb2b9a341ad97f6cc0fefd81
