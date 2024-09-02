@@ -37,8 +37,12 @@ const formatProxy = (proxyString) => {
 };
 
 async function clickByCoordinates(page, x, y) {
-  await page.mouse.click(x, y);
-  console.log(`Clicked at coordinates (${x}, ${y})`);
+  try {
+    await page.mouse.click(x, y);
+    console.log(`Clicked at coordinates (${x}, ${y})`);
+  } catch (error) {
+    console.error(`Failed to click at coordinates (${x}, ${y}): ${error.message}`);
+  }
 }
 
 const processReference = async (reference) => {
@@ -91,8 +95,9 @@ const processReference = async (reference) => {
             cfCallback(token);
           }, res.data);
         } catch (e) {
-          console.error('Error solving captcha:', e.err);
-          throw e;
+          console.error('Error solving captcha:', e.err || e.message);
+          // Instead of throwing, we'll return false to indicate failure
+          return false;
         }
       }
     });
@@ -100,7 +105,7 @@ const processReference = async (reference) => {
     console.log('Navigating to the page...');
     await page.goto('https://www.help.tinder.com/hc/en-us/requests/new?ticket_form_id=360000234452');
     console.log('Page loaded');
-    await sleep(10000);
+    await sleep(15000);
 
     console.log('Clicking');
     await clickByCoordinates(page, 53, 290);
@@ -114,54 +119,39 @@ const processReference = async (reference) => {
     await sleep(30000);
     console.log('Wait complete');
 
-    console.log('Searching for input element...');
-    const element = await page.waitForSelector('#request_custom_fields_360013981632', { timeout: 30000 });
-    if (!element) {
-      throw new Error('Input element not found');
-    }
-    console.log('Input element found');
+    // Helper function to set field values without focus
+    const setFieldValue = async (selector, value) => {
+      try {
+        await page.waitForSelector(selector, { timeout: 10000 });
+        await page.evaluate((sel, val) => {
+          const element = document.querySelector(sel);
+          element.value = val;
+          element.dispatchEvent(new Event('input', { bubbles: true }));
+          element.dispatchEvent(new Event('change', { bubbles: true }));
+        }, selector, value);
+        console.log(`Field ${selector} set to: ${value}`);
+      } catch (error) {
+        console.error(`Failed to set field ${selector}: ${error.message}`);
+        throw error;
+      }
+    };
 
-    console.log('Modifying the value...');
-    await page.evaluate(() => {
-      const input = document.querySelector('#request_custom_fields_360013981632');
-      const oldValue = input.value;
-      input.value = 'f_refund_request';
-      console.log(`Input value changed from '${oldValue}' to '${input.value}'`);
-    });
-
-    console.log('Verifying the change...');
-    const newValue = await page.evaluate(() => {
-      return document.querySelector('#request_custom_fields_360013981632').value;
-    });
-    console.log(`New value verified: ${newValue}`);
-
+    // Set values for all fields
     await sleep(1000);
-    console.log('Searching for input element...');
-    const element2 = await page.waitForSelector('#request_custom_fields_360013898451');
-    console.log('Input element found');
-
-    console.log('Modifying the value...');
-    await page.evaluate(() => {
-      const input = document.querySelector('#request_custom_fields_360013898451');
-      const oldValue = input.value;
-      input.value = 'f_web';
-      console.log(`Input value changed from '${oldValue}' to '${input.value}'`);
-    });
-
-    console.log('Verifying the change...');
-    const newValue2 = await page.evaluate(() => {
-      return document.querySelector('#request_custom_fields_360013898451').value;
-    });
-    console.log(`New value verified: ${newValue2}`);
-
+    await setFieldValue('#request_custom_fields_360013981632', 'f_refund_request');
     await sleep(1000);
-    await page.type('#request_custom_fields_360013897951', email);
+    await setFieldValue('#request_custom_fields_360013898451', 'f_web');
     await sleep(1000);
-    await page.type('#request_custom_fields_360013867472', refCode);
+    await setFieldValue('#request_custom_fields_360013897951', email);
+    await sleep(1000);
+    await setFieldValue('#request_custom_fields_360013867472', refCode);
     await sleep(1000);
 
     const description = spin(isCosu ? cosuDescriptions[Math.floor(Math.random() * cosuDescriptions.length)] : tndrDescriptions[Math.floor(Math.random() * tndrDescriptions.length)]);
-    await page.type('#request_description', description);
+    await setFieldValue('#request_description', description);
+    await sleep(1000);
+
+    console.log('All fields filled successfully');
 
     await sleep(1000);
     await page.click('.tinder-btn');
@@ -173,7 +163,9 @@ const processReference = async (reference) => {
     return true; // Indicate success
   } catch (error) {
     console.error(`Error occurred: ${error.message}`);
-    await browser?.close();
+    if (browser) {
+      await browser.close();
+    }
     return false; // Indicate failure
   }
 };
@@ -188,24 +180,43 @@ const example = async () => {
     if (!completedReferences.has(reference)) {
       console.log(`Processing reference: ${reference}`);
       let success = false;
+      let retryCount = 0;
+      const maxRetries = 3;
 
-      while (!success) {
-        success = await processReference(reference);
-        if (success) {
-          console.log(`Successfully processed reference: ${reference}`);
-          completedReferences.add(reference);
-          
-          // Remove the processed reference from refs.txt and add to completed.txt
-          references = references.filter(ref => ref !== reference);
-          writeFileSync('refs.txt', references.join('\n'));
-          
-          const timestamp = new Date().toISOString();
-          writeFileSync('completed.txt', `${reference},${timestamp}\n`, { flag: 'a' });
-        } else {
-          console.log(`Failed to process reference: ${reference}. Retrying with a new proxy...`);
+      while (!success && retryCount < maxRetries) {
+        try {
+          success = await processReference(reference);
+          if (success) {
+            console.log(`Successfully processed reference: ${reference}`);
+            completedReferences.add(reference);
+            
+            // Remove the processed reference from refs.txt and add to completed.txt
+            references = references.filter(ref => ref !== reference);
+            writeFileSync('refs.txt', references.join('\n'));
+            
+            const timestamp = new Date().toISOString();
+            writeFileSync('completed.txt', `${reference},${timestamp}\n`, { flag: 'a' });
+          } else {
+            console.log(`Failed to process reference: ${reference}. Retrying with a new proxy...`);
+            proxyIndex = (proxyIndex + 1) % proxies.length;
+            retryCount++;
+          }
+        } catch (error) {
+          console.error(`Error processing reference: ${reference}. Error: ${error.message}`);
           proxyIndex = (proxyIndex + 1) % proxies.length;
-          await sleep(1000); // Wait before retrying
+          retryCount++;
         }
+
+        if (retryCount < maxRetries) {
+          console.log(`Waiting before retry ${retryCount + 1}/${maxRetries}...`);
+          await sleep(5000 * (retryCount + 1)); // Exponential backoff
+        }
+      }
+
+      if (!success) {
+        console.log(`Failed to process reference ${reference} after ${maxRetries} attempts. Moving to next reference.`);
+        // Optionally, you could add this reference to a 'failed.txt' file
+        writeFileSync('failed.txt', `${reference}\n`, { flag: 'a' });
       }
     }
 
@@ -221,7 +232,15 @@ const example = async () => {
     await sleep(1000); // Wait between references
   }
 
-  console.log('All references have been processed successfully.');
+  console.log('All references have been processed.');
 };
 
-example();
+example().catch(error => {
+  console.error('Unhandled error in main loop:', error);
+  // Optionally, you could implement a restart mechanism here
+  // For example:
+  // setTimeout(() => {
+  //   console.log('Restarting the script...');
+  //   example();
+  // }, 60000);
+});
